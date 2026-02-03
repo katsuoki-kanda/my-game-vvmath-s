@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Voice Math - High Speed Response</title>
+    <style>
+        :root {
+            --bg-color: #1a1a2e;
+            --accent-color: #00d2ff;
+            --ans-color: #ff2e63;
+            --text-color: #eaeaea;
+            --hud-color: #0f0;
+        }
+
+        body {
+            margin: 0; padding: 0; overflow: hidden;
+            background: var(--bg-color);
+            font-family: 'Arial Black', sans-serif;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            color: #fff;
+            touch-action: manipulation;
+        }
+        
+        #container { 
+            position: relative; 
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        #start-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            z-index: 200; pointer-events: auto; cursor: pointer;
+        }
+        .start-btn { font-size: 40px; padding: 20px 50px; background: var(--accent-color); color: #000; border-radius: 50px; font-weight: bold; }
+        #start-overlay p { font-size: 18px; margin-top: 20px; color: #fff; }
+        
+        .hud-container {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .hud { 
+            font-size: clamp(24px, 6vw, 40px); 
+            font-weight: bold; 
+            color: var(--hud-color); 
+            text-shadow: 2px 2px #000; 
+        }
+        
+        #status-text {
+            font-size: clamp(18px, 4vw, 24px); 
+            color: #ffde00; 
+            text-align: center; 
+            text-shadow: 2px 2px #000;
+            margin-top: 10px;
+        }
+
+        #question-area { 
+            position: relative;
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+        }
+        
+        .ans-display { 
+            font-size: clamp(120px, 35vw, 250px); 
+            color: var(--ans-color); 
+            font-weight: bold; 
+            text-align: center;
+            z-index: 5;
+            -webkit-text-stroke: 2px #fff;
+        }
+
+        .correct-circle {
+            position: absolute;
+            width: 70vw;
+            height: 70vw;
+            max-width: 450px;
+            max-height: 450px;
+            border: clamp(15px, 4vw, 40px) solid rgba(255, 0, 0, 0.8); 
+            border-radius: 50%; 
+            display: none; 
+            box-shadow: 0 0 25px #000; 
+            z-index: 10;
+        }
+
+        #transcript-view {
+            width: 90%;
+            max-width: 500px;
+            font-size: clamp(18px, 5vw, 28px); 
+            color: #00d2ff;
+            background: rgba(0,0,0,0.7); 
+            padding: 12px 20px; 
+            border-radius: 50px;
+            border: 2px solid #00d2ff;
+            text-align: center;
+            margin-bottom: 20px;
+            min-height: 1.5em;
+        }
+
+        .footer-hint {
+            font-size: 14px;
+            color: #aaa;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="start-overlay" onclick="handleStartInteraction()">
+    <div class="start-btn">GAME START</div>
+    <p>画面をタップして開始してください</p>
+</div>
+
+<div id="container">
+    <div class="hud-container">
+        <div class="hud" id="score-text">Score: 0</div>
+        <div class="hud" id="time-text">Time: 90</div>
+    </div>
+
+    <div id="status-text">待機中</div>
+    
+    <div id="question-area">
+        <div id="main-display" class="ans-display">?</div>
+        <div id="correct-circle" class="correct-circle"></div>
+    </div>
+
+    <div id="transcript-view">準備中...</div>
+
+    <div class="footer-hint">
+        答えを声に出してね！
+    </div>
+</div>
+
+<script>
+    const scoreText = document.getElementById('score-text');
+    const timeText = document.getElementById('time-text');
+    const statusText = document.getElementById('status-text');
+    const mainDisplay = document.getElementById('main-display');
+    const correctCircle = document.getElementById('correct-circle');
+    const transcriptView = document.getElementById('transcript-view');
+    const startOverlay = document.getElementById('start-overlay');
+
+    let score = 0;
+    let timeLeft = 90;
+    let gameStarted = false;
+    let currentAns = 0;
+    let lastAns = -1; 
+    let startTime = 0;
+    let isProcessing = false;
+    let isSpeaking = false; 
+    let audioUnlocked = false;
+
+    let audioCtx;
+    const synth = window.speechSynthesis;
+
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+
+    function handleStartInteraction() {
+        initAudio();
+        audioUnlocked = true;
+        synth.cancel();
+        startOverlay.style.display = 'none';
+        initGame();
+    }
+
+    function speak(text) {
+        if (!text || !audioUnlocked) return;
+        
+        synth.cancel();
+        const uttr = new SpeechSynthesisUtterance(text);
+        uttr.lang = 'ja-JP';
+        uttr.rate = 1.3; // 読み上げ速度を少し上げました
+
+        uttr.onstart = () => {
+            isSpeaking = true;
+            transcriptView.style.borderColor = "#ff2e63";
+            transcriptView.textContent = "読み上げ中...";
+        };
+
+        uttr.onend = () => {
+            // 解答待ちへの移行を大幅に高速化（500ms -> 0ms）
+            isSpeaking = false;
+            transcriptView.style.borderColor = "#00d2ff";
+            if (gameStarted) {
+                transcriptView.textContent = "どうぞ！";
+            }
+        };
+
+        synth.speak(uttr);
+    }
+
+    function beep() {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition;
+
+    if (SpeechRecognition) {
+        recognition = new SpeechRecognition();
+        recognition.lang = 'ja-JP';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onresult = (event) => {
+            let resultText = "";
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                resultText += event.results[i][0].transcript;
+            }
+            transcriptView.textContent = `認識中: ${resultText}`;
+
+            if (gameStarted && !isProcessing && !isSpeaking) {
+                const numMap = {
+                    "いち":1, "に":2, "さん":3, "よん":4, "し":4, "ご":5, "ろく":6, "なな":7, "しち":7, "はち":8, "きゅう":9, "く":9,
+                    "1":1, "2":2, "3":3, "4":4, "5":5, "6":6, "7":7, "8":8, "9":9, "10":10, "じゅう":10,
+                    "11":11, "12":12, "13":13, "14":14, "15":15, "16":16, "17":17, "18":18,
+                    "一":1, "二":2, "三":3, "四":4, "五":5, "六":6, "七":7, "八":8, "九":9, "十":10
+                };
+
+                for (let key in numMap) {
+                    if (resultText.includes(key) && numMap[key] === currentAns) {
+                        handleCorrect();
+                        return;
+                    }
+                }
+            }
+            
+            if (!gameStarted && (resultText.includes("スタート") || resultText.includes("もう一回"))) {
+                startGameSession();
+            }
+        };
+
+        recognition.onend = () => { if (audioUnlocked) recognition.start(); };
+    }
+
+    function initGame() {
+        statusText.textContent = "準備完了";
+        try {
+            recognition.start();
+            startGameSession();
+        } catch(e) {
+            startGameSession();
+        }
+    }
+
+    function startGameSession() {
+        if (gameStarted) return;
+        score = 0;
+        scoreText.textContent = `Score: ${score}`;
+        timeLeft = 90;
+        lastAns = -1; 
+        gameStarted = true;
+        isProcessing = false;
+        isSpeaking = false;
+        startTime = Date.now();
+        statusText.textContent = "聞いて答えて！";
+        generateQuestion();
+        updateTimer();
+    }
+
+    function generateQuestion() {
+        if (!gameStarted) return;
+        let n1, n2, newAns, speechOp;
+        const isAddition = Math.random() > 0.5;
+
+        if (isAddition) {
+            n1 = Math.floor(Math.random() * 9) + 1;
+            n2 = Math.floor(Math.random() * 9) + 1;
+            newAns = n1 + n2;
+            speechOp = "足す";
+        } else {
+            n1 = Math.floor(Math.random() * 8) + 2;
+            n2 = Math.floor(Math.random() * (n1 - 1)) + 1;
+            newAns = n1 - n2;
+            speechOp = "引く";
+        }
+
+        if (newAns === lastAns) {
+            generateQuestion();
+            return;
+        }
+
+        currentAns = newAns;
+        lastAns = currentAns; 
+        mainDisplay.textContent = "?";
+        speak(`${n1}、${speechOp}、${n2}、わ？`);
+    }
+
+    function handleCorrect() {
+        isProcessing = true;
+        score++;
+        scoreText.textContent = `Score: ${score}`;
+        beep();
+        
+        mainDisplay.textContent = currentAns;
+        correctCircle.style.display = "block";
+
+        // 次の問題への移行も少し早くしました（800ms -> 600ms）
+        setTimeout(() => {
+            correctCircle.style.display = "none";
+            isProcessing = false;
+            if (gameStarted) generateQuestion();
+        }, 600);
+    }
+
+    function updateTimer() {
+        if (!gameStarted) return;
+        const now = Date.now();
+        const elapsed = Math.floor((now - startTime) / 1000);
+        timeLeft = Math.max(0, 90 - elapsed);
+        timeText.textContent = `Time: ${timeLeft}`;
+        if (timeLeft <= 0) endGame();
+        else requestAnimationFrame(updateTimer);
+    }
+
+    function endGame() {
+        gameStarted = false;
+        mainDisplay.textContent = "END";
+        speak(`終了です。${score}点でした。もう一度やるなら、スタートと言ってください。`);
+        statusText.textContent = "「スタート」でリスタート";
+    }
+</script>
